@@ -60,8 +60,8 @@ def extract_primary_stock_symbol(title, body):
         symbols_without_dollar = [symbol.upper() for symbol in symbols_without_dollar]
 
         # Print found symbols for debugging
-        print(f"Symbols with dollar: {symbols_with_dollar}")
-        print(f"Symbols without dollar: {symbols_without_dollar}")
+        # print(f"Symbols with dollar: {symbols_with_dollar}")
+        # print(f"Symbols without dollar: {symbols_without_dollar}")
 
         # Combine and deduplicate symbols found by regex
         combined_symbols = list(set(symbols_with_dollar + symbols_without_dollar))
@@ -70,15 +70,24 @@ def extract_primary_stock_symbol(title, body):
         doc = nlp(text)
         spacy_symbols = [ent.text.upper() for ent in doc.ents if ent.label_ == "ORG"]
 
-        print(f"Entities found by SpaCy: {spacy_symbols}")
+        # for testing
+        #print(f"Entities found by SpaCy: {spacy_symbols}")
 
         # Combine all symbols
         all_symbols = list(set(combined_symbols + spacy_symbols))
-        print (f'All found symbols {all_symbols}')
-        
+        # print (f'All found symbols {all_symbols}')
+
+        # Count occurrences of each symbol
+        symbol_counts = Counter(all_symbols)
+        # print(f"Symbol counts: {symbol_counts}")
+
+        # Sort symbols by their counts in descending order
+        sorted_symbols = sorted(symbol_counts.items(), key=lambda x: x[1], reverse=True)
+        # print(f"Sorted symbols by frequency: {sorted_symbols}")
+
         # Filter symbols against known stock symbols
-        found_symbol = [symbol for symbol in all_symbols if symbol in known_stock_symbols]
-        print(f"Filtered valid symbols: {found_symbol}")
+        found_symbol = [symbol for symbol, count in sorted_symbols if symbol in known_stock_symbols]
+        # print(f"Filtered valid symbols: {found_symbol}")
 
         return found_symbol
 
@@ -95,29 +104,52 @@ def extract_primary_stock_symbol(title, body):
 
 # Function to extract position/investment details
 def extract_investment_details(text):
-    details = {
-        'Call/Put': [],
-        'Strike': [],
-        'Contract Date': []
-    }
-
-    # Patterns for extraction
-    patterns = [
-        re.compile(r'\$(\d+\.?\d*)\s*(Calls|Puts|Call|Put)\s*Expiry\s*(\w+\s*\d{1,2},\s*\d{4}|\d{1,2}/\d{1,2}/\d{2,4})', re.IGNORECASE),
-        re.compile(r'\$(\d+)\s*(Calls|Puts|Call|Put)\s*exp\s*(\d{1,2}/\d{1,2})', re.IGNORECASE),
-        re.compile(r'(\d+\.?\d*)\s*(Calls|Puts|Call|Put)\s*exp\s*(\d{1,2}/\d{1,2}|\w+\s*\d{1,2}(?:st|nd|rd|th)?|\d{1,2}(?:st|nd|rd|th)?\s*\w+)', re.IGNORECASE),
-        re.compile(r'(\d+\.?\d*)\s*(c|p)\s*(\d{1,2}/\d{1,2})', re.IGNORECASE)
+    # Remove line breaks
+    text = text.replace('\n', ' ')
+    
+    # Define patterns to match the position headers
+    position_patterns = [
+        r'positions:',
+        r'my position:',
+        r'my positions:',
+        r'positions -'
     ]
 
-    for pattern in patterns:
-        matches = pattern.findall(text)
+    # Define patterns to match the price range targeting
+    price_range_pattern = re.compile(r'targeting a price range of \$?(\d+\.?\d*)\s*-\s*\$?(\d+\.?\d*)', re.IGNORECASE)
+    
+    # Define pattern to match position details
+    detail_pattern = re.compile(
+        r'(\$?\d+\.?\d*)\s*(Call|Put|Calls|Puts)\s*(Expiry\s*\d{1,2}/\d{1,2}/\d{2,4}|\d{1,2}/\d{1,2}/\d{2,4}|\d{1,2}/\d{1,2}|\w+\s*\d{1,2}(?:st|nd|rd|th)?|\d{1,2}(?:st|nd|rd|th)?\s*\w+|\d{1,2}(?:st|nd|rd|th)?\s*\w+\s*\d{4})',
+        re.IGNORECASE
+    )
+    
+    # Combine patterns into a single regex pattern
+    combined_pattern = r'|'.join(position_patterns)
+    
+    # Check for position headers
+    position_header_match = re.search(combined_pattern, text, re.IGNORECASE)
+    positions = []
+    if position_header_match:
+        # Text after the position header
+        positions_text = text[position_header_match.end():]
+        
+        # Check for position details in the text
+        matches = detail_pattern.findall(positions_text)
         for match in matches:
-            strike_price, option_type, expiration = match
-            details['Strike'].append(strike_price)
-            details['Call/Put'].append(option_type)
-            details['Contract Date'].append(expiration)
+            full_statement = ' '.join(match).strip()
+            positions.append(full_statement)
+        
+        # Check for price range targeting details in the text
+        price_range_matches = price_range_pattern.findall(positions_text)
+        for match in price_range_matches:
+            full_statement = f'Targeting a price range of ${match[0]} - ${match[1]}'
+            positions.append(full_statement)
+    
+    # Return the positions as a list
+    return positions
 
-    return details
+
 
 # Function to get OP's account karma
 def get_account_karma(author):
@@ -128,6 +160,7 @@ def get_account_karma(author):
         print(f"Error fetching karma for user {author}: {e}")
         return None
 
+# Function to process posts and extract details
 # Function to process posts and extract details
 def process_posts(posts):
     data = []
@@ -149,9 +182,7 @@ def process_posts(posts):
         data.append({
             'Title': post.title,
             'Stock Symbol': symbol,
-            'Call/Put': ', '.join(investment_details['Call/Put']),
-            'Strike': ', '.join(investment_details['Strike']),
-            'Contract Date': ', '.join(investment_details['Contract Date']),
+            'Position': ', '.join(investment_details),  # Join multiple positions with a comma
             'OP Karma': karma,
             'URL': post.url
         })
@@ -159,7 +190,7 @@ def process_posts(posts):
 
 # Main function to fetch and save posts from multiple subreddits to an Excel file
 def main():
-    subreddits = ['options', 'wallstreetbets']
+    subreddits = ['options', 'wallstreetbets', 'shortsqueeze']
     post_types = ['top', 'new']
 
     top_posts_data = []
